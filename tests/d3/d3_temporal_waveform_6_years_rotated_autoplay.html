@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Circular Plot with Waveform for GPP and LAI</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body {
+      font-family: Helvetica, Arial, sans-serif;
+    }
+
+    .tooltip {
+      position: absolute;
+      text-align: center;
+      width: auto;
+      height: auto;
+      padding: 5px;
+      font: 12px sans-serif;
+      background: lightsteelblue;
+      border: 0px;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+
+    .wave-tooltip {
+      position: absolute;
+      text-align: center;
+      width: auto;
+      height: auto;
+      padding: 5px;
+      font: 12px sans-serif;
+      background: lightcoral;
+      border: 0px;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+
+    .overlay {
+      fill: none;
+      pointer-events: all;
+    }
+
+    .selected {
+      opacity: 1;
+    }
+
+    .non-selected {
+      opacity: 0.2;
+    }
+
+    .wave-line {
+      stroke-width: 1.5px;
+    }
+
+    .x-axis {
+      stroke-width: 0.5px;
+      stroke: rgba(200, 200, 200, 0.5);
+    }
+
+    .y-axis {
+      stroke-width: 0.5px;
+      stroke: rgba(200, 200, 200, 0.5);
+    }
+  </style>
+</head>
+<body>
+  <!-- Add a button to save the SVG -->
+  <button id="saveButton">Save as SVG</button>
+  <button id="playButton">Play</button>
+
+  <script>
+    const lai_color = "rgba(0,170,100,0.5)";
+    const gpp_color = "rgba(0,100,220,0.5)";
+    const width = 2200;  // Extended width for the waveform plot
+    const height = 600;
+    const radius = Math.min(height, height) / 2 - 40;
+    const numGridLines = 5; // Number of grid circles
+    const seasonRadius = radius + 80; // Radius for the season labels
+
+    const waveWidth = 1200;  // Increased width for the waveform plot
+    const waveHeight = height / 1.5;  // Height for the waveform plot
+
+    const displaced = 80;
+
+    const svg = d3.select("body")
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height + 100)
+      .append("g")
+      .attr("transform", `translate(${width / 6}, ${height / 2 + displaced})`);
+
+    const waveSvg = d3.select("svg")
+      .append("g")
+      .attr("transform", `translate(${3 * width / 5 - waveWidth / 2 + 40}, ${height / 4})`);
+
+    // Define the tooltip
+    const tooltip = d3.select("body")
+      .append("div")
+      .attr("class", "tooltip")
+      .style("opacity", 0);
+
+    const waveTooltip = d3.select("body")
+      .append("div")
+      .attr("class", "wave-tooltip")
+      .style("opacity", 0);
+
+    const monthAngles_displaced = Math.PI / 2;
+
+    // Define the months and seasons
+    const monthLabels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const seasons = [
+      { name: "Winter", startAngle: 0 + monthAngles_displaced, endAngle: Math.PI / 2 + monthAngles_displaced},
+      { name: "Spring", startAngle: Math.PI / 2 + monthAngles_displaced, endAngle: Math.PI + Math.PI / 2 },
+      { name: "Summer", startAngle: Math.PI + monthAngles_displaced, endAngle: 3 * Math.PI / 2 + monthAngles_displaced },
+      { name: "Autumn", startAngle: -Math.PI / 2 + monthAngles_displaced, endAngle: 0 + monthAngles_displaced}
+    ];
+
+    let timer; // Declare timer variable for play button
+
+    // Load the CSV file
+    d3.csv("data/obs_monthly_agg_gpp_lai_5_years.csv").then(data => {
+      // Group the data by year (12 months per year)
+      const numYears = Math.ceil(data.length / 12);
+      const years = Array.from({ length: numYears }, (_, i) => i);
+
+      const yearGroups = years.map(year => {
+        return {
+          year: year + 1,
+          values: data.slice(year * 12, (year + 1) * 12)
+        };
+      });
+
+      // Standardize GPP and LAI values per year
+      yearGroups.forEach(group => {
+        const gppValues = group.values.map(d => +d.gpp);
+        const laiValues = group.values.map(d => +d.lai);
+
+        const gppMean = d3.mean(gppValues);
+        const gppStd = d3.deviation(gppValues);
+        const laiMean = d3.mean(laiValues);
+        const laiStd = d3.deviation(laiValues);
+
+        group.values.forEach(d => {
+          d.gppStandardized = (d.gpp - gppMean) / gppStd;
+          d.laiStandardized = (d.lai - laiMean) / laiStd;
+        });
+      });
+
+      // Flatten the standardized data back into a single array
+      const standardizedData = yearGroups.flatMap(group => group.values);
+
+      // Set domain based on standardized data to cover typical z-score range
+      const angle = d3.scaleLinear()
+        .domain([0, 12])  // 12 sections for 12 months (full circle)
+        .range([Math.PI / 2, 2.5 * Math.PI]);  // Full circle, starting at 6 o'clock and rotating clockwise
+
+      const radialScale = d3.scaleLinear()
+        .domain([-2, 2])  // Z-scores typically range from -2 to 2, covering ~95% of data
+        .range([0, radius]);
+
+      // Draw the circular grid
+      for (let i = 1; i <= numGridLines; i++) {
+        svg.append("circle")
+          .attr("cx", 0)
+          .attr("cy", 0)
+          .attr("r", radialScale(i * 0.5 - 1)) // 0.5 intervals from -2 to 2
+          .attr("fill", "none")
+          .attr("stroke", "#ccc")
+          .attr("stroke-dasharray", "4,4");
+        
+        // Add grid labels
+        svg.append("text")
+          .attr("x", 5)
+          .attr("y", -radialScale(i * 0.5 - 1))
+          .attr("dy", "-0.2em")
+          .attr("text-anchor", "start")
+          .style("font-size", "10px")
+          .text((i * 0.5 - 1).toFixed(1));
+      }
+
+      // Draw the axes for each month
+      for (let i = 0; i < 12; i++) {
+        svg.append("line")
+          .attr("class", "month-axis")
+          .attr("x1", radialScale(-2) * Math.cos(angle(i)))
+          .attr("y1", radialScale(-2) * Math.sin(angle(i)))
+          .attr("x2", radialScale(2) * Math.cos(angle(i)))
+          .attr("y2", radialScale(2) * Math.sin(angle(i)))
+          .attr("stroke", "#999")
+          .attr("stroke-width", 1)
+          .attr("stroke-dasharray", "4,4");
+      }
+
+      // Generate the line and area for standardized GPP with smooth curves
+      const lineGpp = d3.lineRadial()
+        .angle((d, i) => angle(i % 12) + Math.PI / 2) // Rotate so January starts at 6 o'clock
+        .radius(d => radialScale(d.gppStandardized))
+        .curve(d3.curveCardinal); // Apply smooth curve
+
+      const areaGpp = d3.areaRadial()
+        .angle((d, i) => angle(i % 12) + Math.PI / 2) // Rotate so January starts at 6 o'clock
+        .innerRadius(0)
+        .outerRadius(d => radialScale(d.gppStandardized))
+        .curve(d3.curveCardinal); // Apply smooth curve
+
+      // Generate the line and area for standardized LAI with smooth curves
+      const lineLai = d3.lineRadial()
+        .angle((d, i) => angle(i % 12) + Math.PI / 2) // Rotate so January starts at 6 o'clock
+        .radius(d => radialScale(d.laiStandardized))
+        .curve(d3.curveCardinal); // Apply smooth curve
+
+      const areaLai = d3.areaRadial()
+        .angle((d, i) => angle(i % 12) + Math.PI / 2) // Rotate so January starts at 6 o'clock
+        .innerRadius(0)
+        .outerRadius(d => radialScale(d.laiStandardized))
+        .curve(d3.curveCardinal); // Apply smooth curve
+
+      // Append and fill the standardized GPP area
+      svg.append("path")
+        .datum(standardizedData)
+        .attr("fill", gpp_color)
+        .attr("opacity", 0.3)
+        .attr("d", areaGpp);
+
+      // Append the standardized GPP line
+      svg.append("path")
+        .datum(standardizedData)
+        .attr("fill", "none")
+        .attr("stroke", gpp_color)
+        .attr("stroke-width", 2)
+        .attr("d", lineGpp);
+
+      // Append and fill the standardized LAI area
+      svg.append("path")
+        .datum(standardizedData)
+        .attr("fill", lai_color)
+        .attr("opacity", 0.3)
+        .attr("d", areaLai);
+
+      // Append the standardized LAI line
+      svg.append("path")
+        .datum(standardizedData)
+        .attr("fill", "none")
+        .attr("stroke", lai_color)
+        .attr("stroke-width", 2)
+        .attr("d", lineLai);
+
+      // Highlight the data points for GPP and LAI with hover interactions
+      const gppPoints = svg.selectAll(".gpp-point")
+        .data(standardizedData)
+        .enter()
+        .append("circle")
+        .attr("class", "gpp-point")
+        .attr("cx", (d, i) => radialScale(d.gppStandardized) * Math.cos(angle(i % 12)))
+        .attr("cy", (d, i) => radialScale(d.gppStandardized) * Math.sin(angle(i % 12)))
+        .attr("r", 5)
+        .attr("fill", gpp_color)
+        .style("visibility", "hidden")
+        .on("mouseover", function(event, d) {
+          tooltip.transition().duration(200).style("opacity", .9);
+          tooltip.html(`GPP: ${d.gpp.toFixed(2)}`)
+            .style("left", (event.pageX + 5) + "px")
+            .style("top", (event.pageY - 28) + "px");
+        })
+        .on("mouseout", function() {
+          tooltip.transition().duration(500).style("opacity", 0);
+        });
+
+      const laiPoints = svg.selectAll(".lai-point")
+        .data(standardizedData)
+        .enter()
+        .append("circle")
+        .attr("class", "lai-point")
+        .attr("cx", (d, i) => radialScale(d.laiStandardized) * Math.cos(angle(i % 12)))
+        .attr("cy", (d, i) => radialScale(d.laiStandardized) * Math.sin(angle(i % 12)))
+        .attr("r", 5)
+        .attr("fill", lai_color)
+        .style("visibility", "hidden")
+        .on("mouseover", function(event, d) {
+          tooltip.transition().duration(200).style("opacity", .9);
+          tooltip.html(`LAI: ${d.lai.toFixed(2)}`)
+            .style("left", (event.pageX + 5) + "px")
+            .style("top", (event.pageY - 28) + "px");
+        })
+        .on("mouseout", function() {
+          tooltip.transition().duration(500).style("opacity", 0);
+        });
+
+      // Draw season labels along a larger circular path
+      seasons.forEach((season, index) => {
+        const arc = d3.arc()
+          .innerRadius(seasonRadius)
+          .outerRadius(seasonRadius)
+          .startAngle(season.startAngle)
+          .endAngle(season.endAngle);
+
+        svg.append("path")
+          .attr("id", `seasonArc${index}`)
+          .attr("d", arc)
+          .attr("fill", "none");
+
+        svg.append("text")
+          .append("textPath")
+          .attr("href", `#seasonArc${index}`)
+          .attr("startOffset", "25%")
+          .attr("text-anchor", "middle")
+          .style("font-size", "14px")
+          .style("font-family", "Helvetica, Arial, sans-serif")
+          .text(season.name);
+      });
+
+      // Adding month labels
+      svg.selectAll(".month-label")
+        .data(monthLabels)
+        .enter()
+        .append("text")
+        .attr("class", "month-label")
+        .attr("x", (d, i) => (radius + 20) * Math.cos(angle(i)))
+        .attr("y", (d, i) => (radius + 20) * Math.sin(angle(i)))
+        .attr("dy", "0.35em")
+        .attr("text-anchor", "middle")
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .text(d => d);
+
+      // Define scales for the wave plot
+      const xWaveScale = d3.scaleLinear()
+        .domain([0, standardizedData.length - 1])
+        .range([0, waveWidth]);
+
+      const yWaveScale = d3.scaleLinear()
+        .domain([-2, 2])
+        .range([waveHeight, 0]);
+
+      // Generate sine waves for standardized GPP and LAI
+      const waveGpp = d3.line()
+        .x((d, i) => xWaveScale(i))
+        .y(d => yWaveScale(d.gppStandardized))
+        .curve(d3.curveCardinal);
+
+      const waveLai = d3.line()
+        .x((d, i) => xWaveScale(i))
+        .y(d => yWaveScale(d.laiStandardized))
+        .curve(d3.curveCardinal);
+
+      // Append GPP waveform
+      waveSvg.append("path")
+        .datum(standardizedData)
+        .attr("class", "wave-line")
+        .attr("d", waveGpp)
+        .attr("fill", "none")
+        .attr("stroke", gpp_color);
+
+      // Append LAI waveform
+      waveSvg.append("path")
+        .datum(standardizedData)
+        .attr("class", "wave-line")
+        .attr("d", waveLai)
+        .attr("fill", "none")
+        .attr("stroke", lai_color);
+
+      // Add x-axis with tick labels
+      waveSvg.append("g")
+        .attr("class", "x-axis")
+        .attr("transform", `translate(0, ${waveHeight})`)
+        .call(d3.axisBottom(xWaveScale).ticks(standardizedData.length).tickFormat((d, i) => monthLabels[i % 12]))
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .selectAll("text")
+        .attr("transform", "rotate(-60)")
+        .style("text-anchor", "end");
+
+      // Add y-axis with tick labels
+      waveSvg.append("g")
+        .attr("class", "y-axis")
+        .call(d3.axisLeft(yWaveScale))
+        .style("font-family", "Helvetica, Arial, sans-serif");
+
+      // Add dots on the waveform
+      waveSvg.selectAll(".wave-gpp-dot")
+        .data(standardizedData)
+        .enter()
+        .append("circle")
+        .attr("class", "wave-gpp-dot")
+        .attr("cx", (d, i) => xWaveScale(i))
+        .attr("cy", d => yWaveScale(d.gppStandardized))
+        .attr("r", 4)
+        .attr("fill", gpp_color)
+        .style("visibility", "hidden");
+
+      waveSvg.selectAll(".wave-lai-dot")
+        .data(standardizedData)
+        .enter()
+        .append("circle")
+        .attr("class", "wave-lai-dot")
+        .attr("cx", (d, i) => xWaveScale(i))
+        .attr("cy", d => yWaveScale(d.laiStandardized))
+        .attr("r", 4)
+        .attr("fill", lai_color)
+        .style("visibility", "hidden");
+
+      // Draw connecting lines between circular plot and waveform plot
+      const connectingLines = standardizedData.map((d, i) => {
+        return svg.append("line")
+          .attr("class", "connecting-line")
+          .attr("x1", radialScale(d.gppStandardized) * Math.cos(angle(i % 12)))
+          .attr("y1", radialScale(d.gppStandardized) * Math.sin(angle(i % 12)))
+          .attr("x2", xWaveScale(i) + width / 7.5 + waveWidth / 4 - 200)
+          .attr("y2", yWaveScale(d.gppStandardized) - height / 4 - displaced)
+          .attr("stroke", gpp_color)
+          .attr("stroke-width", 1)
+          .style("visibility", "hidden");
+      });
+
+      const laiConnectingLines = standardizedData.map((d, i) => {
+        return svg.append("line")
+          .attr("class", "connecting-line")
+          .attr("x1", radialScale(d.laiStandardized) * Math.cos(angle(i % 12)))
+          .attr("y1", radialScale(d.laiStandardized) * Math.sin(angle(i % 12)))
+          .attr("x2", xWaveScale(i) + width / 7.5 + waveWidth / 4 - 200)
+          .attr("y2", yWaveScale(d.laiStandardized) - height / 4 - displaced)
+          .attr("stroke", lai_color)
+          .attr("stroke-width", 1)
+          .style("visibility", "hidden");
+      });
+
+      // Create a time slider
+      const timeSlider = d3.select("body")
+        .append("input")
+        .attr("type", "range")
+        .attr("min", 0)
+        .attr("max", standardizedData.length - 1)
+        .attr("value", 0)
+        .attr("step", 1)
+        .style("width", `${waveWidth + 15}px`)
+        .style("position", "absolute")
+        .style("top", `50px`)
+        .style("left", `${3 * width / 5 - waveWidth / 2 + 40}px`)
+        .on("input", function() {
+          const selectedIndex = +this.value;
+
+          // Hide all points and connecting lines
+          gppPoints.style("visibility", "hidden");
+          laiPoints.style("visibility", "hidden");
+          waveSvg.selectAll(".wave-gpp-dot").style("visibility", "hidden");
+          waveSvg.selectAll(".wave-lai-dot").style("visibility", "hidden");
+          connectingLines.forEach(line => line.style("visibility", "hidden"));
+          laiConnectingLines.forEach(line => line.style("visibility", "hidden"));
+
+          // Show the selected points and connecting lines
+          d3.select(gppPoints.nodes()[selectedIndex]).style("visibility", "visible");
+          d3.select(laiPoints.nodes()[selectedIndex]).style("visibility", "visible");
+          d3.select(waveSvg.selectAll(".wave-gpp-dot").nodes()[selectedIndex]).style("visibility", "visible");
+          d3.select(waveSvg.selectAll(".wave-lai-dot").nodes()[selectedIndex]).style("visibility", "visible");
+          connectingLines[selectedIndex].style("visibility", "visible");
+          laiConnectingLines[selectedIndex].style("visibility", "visible");
+
+          // Update the vertical line position to indicate the selected time step
+          verticalLine.attr("x1", xWaveScale(selectedIndex))
+                      .attr("x2", xWaveScale(selectedIndex));
+        });
+
+      // Add axis labels
+      waveSvg.append("text")
+        .attr("class", "x-axis-label")
+        .attr("text-anchor", "middle")
+        .attr("x", waveWidth / 2)
+        .attr("y", waveHeight + 40)
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .text("Time Step (Months)");
+
+      waveSvg.append("text")
+        .attr("class", "y-axis-label")
+        .attr("text-anchor", "middle")
+        .attr("transform", `translate(-40, ${waveHeight / 2}) rotate(-90)`)
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .text("Standardized Values (Z-score)");
+
+      // Draw a vertical line to indicate the selected time step
+      const verticalLine = waveSvg.append("line")
+        .attr("class", "vertical-line")
+        .attr("x1", xWaveScale(0))
+        .attr("x2", xWaveScale(0))
+        .attr("y1", 0)
+        .attr("y2", waveHeight)
+        .attr("stroke", "gray")
+        .attr("stroke-width", 1);
+
+      // Add legend for GPP and LAI
+      const legend = waveSvg.append("g")
+        .attr("class", "legend")
+        .attr("transform", `translate(${waveWidth - 100}, ${waveHeight + 60})`); // Position the legend
+
+      legend.append("rect")
+        .attr("x", 0)
+        .attr("y", 0)
+        .attr("width", 15)
+        .attr("height", 15)
+        .attr("fill", gpp_color);
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 12)
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .style("font-size", "12px")
+        .text("GPP");
+
+      legend.append("rect")
+        .attr("x", 0)
+        .attr("y", 20)
+        .attr("width", 15)
+        .attr("height", 15)
+        .attr("fill", lai_color);
+
+      legend.append("text")
+        .attr("x", 20)
+        .attr("y", 32)
+        .style("font-family", "Helvetica, Arial, sans-serif")
+        .style("font-size", "12px")
+        .text("LAI");
+
+      // Add event listener to save SVG
+      document.getElementById("saveButton").addEventListener("click", function() {
+        const svgElement = document.querySelector("svg");
+        const serializer = new XMLSerializer();
+        const svgBlob = new Blob([serializer.serializeToString(svgElement)], {type: "image/svg+xml;charset=utf-8"});
+        const url = URL.createObjectURL(svgBlob);
+        const downloadLink = document.createElement("a");
+        downloadLink.href = url;
+        downloadLink.download = "visualization.svg";
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+      });
+
+      // Play button functionality
+      document.getElementById("playButton").addEventListener("click", function() {
+        const maxIndex = standardizedData.length - 1;
+        let currentIndex = +timeSlider.node().value;
+
+        // Toggle play/pause
+        if (!timer) {
+          this.textContent = "Pause"; // Update button text
+
+          timer = setInterval(() => {
+            currentIndex = (currentIndex + 1) % (maxIndex + 1);
+            timeSlider.node().value = currentIndex;
+            timeSlider.dispatch("input"); // Trigger slider input event
+
+            if (currentIndex === maxIndex) {
+              clearInterval(timer);
+              timer = null;
+              this.textContent = "Play";
+            }
+          }, 500); // Adjust speed (500ms delay between steps)
+        } else {
+          clearInterval(timer);
+          timer = null;
+          this.textContent = "Play"; // Update button text
+        }
+      });
+
+    }).catch(error => {
+      console.error("Error loading or processing data:", error);
+    });
+  </script>
+</body>
+</html>

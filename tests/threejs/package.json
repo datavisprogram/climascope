@@ -1,0 +1,36 @@
+{
+  "name": "three-d-view",
+  "version": "0.1.0",
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "csv": "^6.3.9",
+    "express": "^4.19.2",
+    "fast-csv": "^5.0.1",
+    "three": "^0.166.1",
+    "vite": "^5.2.6",
+    "vite-plugin-string": "^1.2.3",
+    "vite-plugin-svgr": "^4.2.0",
+    "vite-tsconfig-paths": "^4.3.2"
+  },
+  "scripts": {
+    "dev": "vite",
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "devDependencies": {
+    "dat.gui": "^0.7.9"
+  }
+}

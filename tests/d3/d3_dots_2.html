@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GPP and LAI Visualization with D3.js</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            padding: 6px;
+            font: 12px sans-serif;
+            background: lightsteelblue;
+            border: 0;
+            border-radius: 8px;
+            pointer-events: none;
+        }
+        .legend text {
+            font-family: sans-serif;
+            font-size: 12px;
+        }
+        svg {
+            background-color: white;
+        }
+        .selected {
+            opacity: 1;
+        }
+        .not-selected {
+            opacity: 0.2;
+        }
+        .selection-rect {
+            fill: none;
+            stroke: red;
+            stroke-width: 2;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <script>
+        const width = 1800;
+        const height = 900;
+        const margin = {top: 20, right: 20, bottom: 50, left: 50};
+
+        const svg = d3.select('body')
+                      .append('svg')
+                      .attr('width', width)
+                      .attr('height', height);
+
+        const xScale = d3.scaleLinear()
+                         .domain([-180, 180])
+                         .range([margin.left, width - margin.right]);
+
+        const yScale = d3.scaleLinear()
+                         .domain([-90, 90])
+                         .range([height - margin.bottom, margin.top]);
+
+        const gppScale = d3.scaleLinear()
+                           .domain([-0.6, 12.44])
+                           .range([0, 255]);
+
+        const laiScale = d3.scaleLinear()
+                           .domain([0, 7.0])
+                           .range([0, 255]);
+
+        const tooltip = d3.select('body')
+                          .append('div')
+                          .attr('class', 'tooltip')
+                          .style('visibility', 'hidden');
+
+        let selectedGPPRange = null;
+        let selectedLAIRange = null;
+        let selectionRect = null;  // Reference to the selection rectangle
+        let resolution = 1;  // Default resolution (no skipping)
+
+        d3.csv('data/obs_gpp_lai_land_only_updated_gpp.csv').then(data => {
+            data.forEach(d => {
+                d.time = +d.time;
+                d.lat = +d.lat;
+                d.lon = +d.lon;
+                d.gpp = +d.gpp;
+                d.lai = +d.lai;
+            });
+
+            const timeSteps = [...new Set(data.map(d => d.time))];
+            let currentStep = timeSteps[0];
+            let isPlaying = false;
+            let interval;
+
+            function draw(timestep) {
+                // Clear previous points to avoid "holes"
+                svg.selectAll('circle').remove();
+
+                const filteredData = data.filter(d => d.time === timestep)
+                                         .filter((d, i) => i % resolution === 0);  // Skip points based on resolution
+
+                // Batch DOM updates to minimize reflows
+                svg.selectAll('circle')
+                    .data(filteredData)
+                    .join('circle')
+                    .attr('cx', d => xScale(d.lon))
+                    .attr('cy', d => yScale(d.lat))
+                    .attr('r', d => (d.gpp === 0 && d.lai === 0) ? 0.3 : Math.sqrt(gppScale(d.gpp)) * 0.2)
+                    .attr('fill', d => `rgba(${laiScale(d.lai)},${gppScale(d.gpp)},150,${(laiScale(d.lai) + gppScale(d.gpp)) / 2 + 200})`)
+                    .attr('class', d => {
+                        if (selectedGPPRange && selectedLAIRange) {
+                            return selectedGPPRange[0] <= d.gpp && d.gpp <= selectedGPPRange[1] &&
+                                selectedLAIRange[0] <= d.lai && d.lai <= selectedLAIRange[1] 
+                                ? 'selected' : 'not-selected';
+                        } else {
+                            return 'selected';
+                        }
+                    })
+                    .on('mouseover', function(event, d) {
+                        tooltip.style('visibility', 'visible')
+                            .text(`Lat: ${d.lat}, Lon: ${d.lon}, GPP: ${d.gpp.toFixed(2)}, LAI: ${d.lai.toFixed(2)}`)
+                            .style('left', `${event.pageX + 10}px`)
+                            .style('top', `${event.pageY - 20}px`);
+                    })
+                    .on('mousemove', function(event) {
+                        tooltip.style('left', `${event.pageX + 10}px`)
+                            .style('top', `${event.pageY - 20}px`);
+                    })
+                    .on('mouseout', function() {
+                        tooltip.style('visibility', 'hidden');
+                    });
+
+            }
+
+            function drawPrismLegend() {
+                const legendSize = 200;
+                const steps = 20;
+
+                const legendGroup = svg.append('g')
+                                       .attr('transform', `translate(${margin.left}, ${height - margin.bottom - 250})`);
+
+                for (let i = 0; i <= steps; i++) {
+                    for (let j = 0; j <= steps; j++) {
+                        const gppValue = gppScale.invert(i * (255 / steps));
+                        const laiValue = laiScale.invert(j * (255 / steps));
+
+                        legendGroup.append('rect')
+                                   .attr('x', i * (legendSize / steps))
+                                   .attr('y', j * (legendSize / steps))
+                                   .attr('width', legendSize / steps)
+                                   .attr('height', legendSize / steps)
+                                   .attr('fill', `rgba(${laiScale(laiValue)},${gppScale(gppValue)},150,1)`)
+                                   .on('mouseover', function() {
+                                       d3.select(this).attr('opacity', 0.7);
+                                   })
+                                   .on('mouseout', function() {
+                                       d3.select(this).attr('opacity', 1);
+                                   })
+                                   .call(d3.drag()
+                                       .on('start', dragStart)
+                                       .on('drag', dragging)
+                                       .on('end', dragEnd)
+                                   );
+                    }
+                }
+
+                let rect, startX, startY, endX, endY;
+                
+                function dragStart(event) {
+                    const [x, y] = d3.pointer(event, legendGroup.node());
+                    startX = Math.floor(x / (legendSize / steps));
+                    startY = Math.floor(y / (legendSize / steps));
+                    rect = legendGroup.append('rect')
+                                      .attr('x', startX * (legendSize / steps))
+                                      .attr('y', startY * (legendSize / steps))
+                                      .attr('width', 0)
+                                      .attr('height', 0)
+                                      .attr('fill', 'none')
+                                      .attr('stroke', 'black')
+                                      .attr('stroke-width', 2);
+                }
+                
+                function dragging(event) {
+                    const [x, y] = d3.pointer(event, legendGroup.node());
+                    endX = Math.floor(x / (legendSize / steps));
+                    endY = Math.floor(y / (legendSize / steps));
+
+                    const rectWidth = Math.abs(endX - startX) * (legendSize / steps);
+                    const rectHeight = Math.abs(endY - startY) * (legendSize / steps);
+
+                    rect.attr('width', rectWidth)
+                        .attr('height', rectHeight)
+                        .attr('x', Math.min(startX, endX) * (legendSize / steps))
+                        .attr('y', Math.min(startY, endY) * (legendSize / steps));
+                }
+
+                function dragEnd() {
+                    const x1 = Math.min(startX, endX);
+                    const x2 = Math.max(startX, endX);
+                    const y1 = Math.min(startY, endY);
+                    const y2 = Math.max(startY, endY);
+
+                    selectedGPPRange = [gppScale.invert(x1 * (255 / steps)), gppScale.invert((x2 + 1) * (255 / steps))];
+                    selectedLAIRange = [laiScale.invert(y1 * (255 / steps)), laiScale.invert((y2 + 1) * (255 / steps))];
+
+                    // Highlight the selected area
+                    if (selectionRect) {
+                        selectionRect.remove();
+                    }
+                    selectionRect = rect;
+
+                    // Filter data based on selection
+                    draw(currentStep);
+                }
+
+                // Label the axes
+                legendGroup.append('text')
+                           .attr('x', -10)
+                           .attr('y', -10)
+                           .text('LAI')
+                           .attr('text-anchor', 'end')
+                           .style('font-weight', 'bold');
+                
+                legendGroup.append('text')
+                           .attr('x', legendSize + 10)
+                           .attr('y', legendSize + 20)
+                           .text('GPP')
+                           .attr('text-anchor', 'middle')
+                           .style('font-weight', 'bold');
+            }
+
+            draw(currentStep);
+            drawPrismLegend();
+
+            const timeSlider = d3.select('body').append('input')
+                .attr('type', 'range')
+                .attr('min', timeSteps[0])
+                .attr('max', timeSteps[timeSteps.length - 1])
+                .attr('step', 1)
+                .style('width', '880px')
+                .on('input', function() {
+                    currentStep = +this.value;
+                    draw(currentStep);
+                })
+                .property('value', currentStep);
+
+            const resolutionSlider = d3.select('body').append('input')
+                .attr('type', 'range')
+                .attr('min', 1)
+                .attr('max', 10)
+                .attr('step', 1)
+                .style('width', '880px')
+                .on('input', function() {
+                    resolution = +this.value;
+                    draw(currentStep);
+                })
+                .property('value', resolution);
+
+            const playButton = d3.select('body').append('button')
+                .text('Play')
+                .on('click', togglePlay);
+
+            function togglePlay() {
+                if (isPlaying) {
+                    clearInterval(interval);
+                    playButton.text('Play');
+                } else {
+                    interval = setInterval(() => {
+                        currentStep = currentStep < timeSteps[timeSteps.length - 1] ? currentStep + 1 : timeSteps[0];
+                        timeSlider.property('value', currentStep);
+                        draw(currentStep);
+                    }, 500); // Adjust the interval speed as needed
+                    playButton.text('Pause');
+                }
+                isPlaying = !isPlaying;
+            }
+
+            // Add reset filter button
+            d3.select('body').append('button')
+                .text('Reset Filter')
+                .on('click', function() {
+                    selectedGPPRange = null;
+                    selectedLAIRange = null;
+                    if (selectionRect) selectionRect.remove();
+                    draw(currentStep);
+                });
+        });
+    </script>
+</body>
+</html>

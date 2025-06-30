@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GPP Visualization with D3.js</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        .line {
+            fill: none;
+            stroke-width: 2;
+        }
+        .highlighted {
+            stroke-width: 4 !important;
+            stroke: orange !important;
+        }
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #000;
+            shape-rendering: crispEdges;
+        }
+        .tooltip {
+            position: absolute;
+            text-align: center;
+            padding: 6px;
+            font: 12px sans-serif;
+            background: lightsteelblue;
+            border: 0;
+            border-radius: 8px;
+            pointer-events: none;
+        }
+        .legend {
+            font-size: 12px;
+            font-family: sans-serif;
+        }
+        svg {
+            fill: rgba(255,255,255,0);
+        }
+    </style>
+</head>
+<body>
+    <script>
+        const margin = {top: 50, right: 50, bottom: 50, left: 100};
+        const width = 1800 - margin.left - margin.right;
+        const height = 900 - margin.top - margin.bottom;
+
+        const svg = d3.select('body')
+                      .append('svg')
+                      .attr('width', width + margin.left + margin.right)
+                      .attr('height', height + margin.top + margin.bottom)
+                      .append('g')
+                      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const xScale = d3.scaleLinear()
+                         .domain([-180, 180])
+                         .range([0, width]);
+
+        const yScale = d3.scaleLinear()
+                         .domain([90, -90])
+                         .range([0, height]);
+
+        const gppScale = d3.scaleLinear()
+                           .domain([-0.6, 12.44])
+                           .range([0, 15]);
+
+        let colorScale = d3.scaleSequential()
+                             .domain([0, 7.0])
+                             .interpolator(d3.interpolateViridis);
+
+        const tooltip = d3.select('body').append('div').attr('class', 'tooltip');
+
+        d3.csv('data/obs_gpp_lai_land_only.csv').then(data => {
+            data.forEach(d => {
+                d.time = +d.time;
+                d.lat = +d.lat;
+                d.lon = +d.lon;
+                d.gpp = +d.gpp;
+                d.lai = +d.lai;
+            });
+
+            const timeSteps = [...new Set(data.map(d => d.time))];
+
+            let currentStep = timeSteps[0];
+            let skipLatitudes = 2;
+            let isPlaying = false;
+            let interval;
+            let showLAI = true;
+            let fillArea = false;
+
+            function draw(timeStep) {
+                svg.selectAll('.line-segment, .filled-area').remove(); // Clear previous lines
+
+                const filteredData = data.filter(d => d.time === timeStep);
+                const latitudes = [...new Set(filteredData.map(d => d.lat))].filter((_, i) => i % skipLatitudes === 0);
+
+                latitudes.forEach(lat => {
+                    const latData = filteredData.filter(d => d.lat === lat);
+                    let lastLon = null;
+                    let lineData = [];
+
+                    latData.forEach((d, i) => {
+                        if (lastLon !== null && Math.abs(d.lon - lastLon) > 1) {
+                            drawLineSegments(lineData, lat);
+                            lineData = [];
+                        }
+                        lineData.push(d);
+                        lastLon = d.lon;
+                    });
+
+                    if (lineData.length > 1) {
+                        drawLineSegments(lineData, lat);
+                    }
+                });
+            }
+
+            function drawLineSegments(latData, lat) {
+                const latClass = `lat-${lat.toString().replace('.', '-')}`;
+
+                let segmentStartIndex = 0;
+                for (let i = 1; i < latData.length; i++) {
+                    if (latData[i].lai !== latData[segmentStartIndex].lai) {
+                        drawSegment(latData.slice(segmentStartIndex, i + 1), latClass);
+                        segmentStartIndex = i;
+                    }
+                }
+                drawSegment(latData.slice(segmentStartIndex), latClass);
+            }
+
+            function drawSegment(segmentData, latClass) {
+                const segmentPath = svg.append('path')
+                    .datum(segmentData)
+                    .attr('class', `line-segment ${latClass}`)
+                    .attr('d', d3.line()
+                        .x(d => xScale(d.lon))
+                        .y(d => yScale(d.lat) - gppScale(d.gpp)))
+                    .attr('stroke', colorScale(segmentData[0].lai))
+                    .on('mouseover', function(event, d) {
+                        d3.selectAll(`.${latClass}`).classed('highlighted', true);
+                        tooltip.style('visibility', 'visible')
+                            .text(`Lat: ${segmentData[0].lat}, Lon: ${segmentData[0].lon}, GPP: ${segmentData[0].gpp.toFixed(2)}, LAI: ${segmentData[0].lai.toFixed(2)}`)
+                            .style('left', `${event.pageX + 10}px`)
+                            .style('top', `${event.pageY - 20}px`);
+                    })
+                    .on('mousemove', function(event) {
+                        tooltip.style('left', `${event.pageX + 10}px`)
+                            .style('top', `${event.pageY - 20}px`);
+                    })
+                    .on('mouseout', function() {
+                        d3.selectAll(`.${latClass}`).classed('highlighted', false);
+                        tooltip.style('visibility', 'hidden');
+                    });
+
+                if (fillArea) {
+                    const baseY = yScale(segmentData[0].lat); // Base of the latitude
+                    const filledArea = svg.append('path')
+                        .datum(segmentData)
+                        .attr('class', 'filled-area')
+                        .attr('d', d3.area()
+                            .x(d => xScale(d.lon))
+                            .y0(baseY)
+                            .y1(d => yScale(d.lat) - gppScale(d.gpp)))
+                        .attr('fill', colorScale(segmentData[0].lai))
+                        .attr('fill-opacity', 0.3);
+                }
+            }
+
+            function togglePlay() {
+                if (isPlaying) {
+                    clearInterval(interval);
+                    isPlaying = false;
+                    playButton.text('Play');
+                } else {
+                    interval = setInterval(() => {
+                        currentStep = currentStep < timeSteps[timeSteps.length - 1] ? currentStep + 1 : timeSteps[0];
+                        timeSlider.property('value', currentStep);
+                        draw(currentStep);
+                    }, 1000); // Adjust the interval speed as needed
+                    isPlaying = true;
+                    playButton.text('Pause');
+                }
+            }
+
+            draw(currentStep);
+
+            const timeSlider = d3.select('body').append('input')
+                .attr('type', 'range')
+                .attr('min', timeSteps[0])
+                .attr('max', timeSteps[timeSteps.length - 1])
+                .attr('step', 1)
+                .style('width', '400px')
+                .on('input', function() {
+                    currentStep = +this.value;
+                    draw(currentStep);
+                })
+                .property('value', currentStep);
+
+            const skipSlider = d3.select('body').append('input')
+                .attr('type', 'range')
+                .attr('min', 1)
+                .attr('max', 10)
+                .attr('step', 1)
+                .style('width', '400px')
+                .on('input', function() {
+                    skipLatitudes = +this.value;
+                    draw(currentStep);
+                })
+                .property('value', skipLatitudes);
+
+            d3.select('body').append('label')
+                .text(' Skip Latitudes');
+
+            const playButton = d3.select('body').append('button')
+                .text('Play')
+                .on('click', togglePlay);
+
+            const laiToggle = d3.select('body').append('button')
+                .text('Toggle LAI')
+                .on('click', () => {
+                    showLAI = !showLAI;
+                    colorScale = showLAI ? d3.scaleSequential().domain([0, 7.0]).interpolator(d3.interpolateCool) : () => '#000';
+                    draw(currentStep);
+                });
+
+            const fillToggle = d3.select('body').append('button')
+                .text('Toggle Fill Area')
+                .on('click', () => {
+                    fillArea = !fillArea;
+                    draw(currentStep);
+                });
+
+            // Add legend for the color scale
+            const legendWidth = 300;
+            const legendHeight = 20;
+
+            const legendSvg = d3.select('body')
+                .append('svg')
+                .attr('width', legendWidth)
+                .attr('height', legendHeight + 50)
+                .attr('class', 'legend');
+
+            const legendScale = d3.scaleLinear()
+                .domain([0, 7.0])
+                .range([0, legendWidth]);
+
+            const legendAxis = d3.axisBottom(legendScale)
+                .ticks(6);
+
+            const defs = legendSvg.append('defs');
+
+            let linearGradient = defs.append('linearGradient')
+                .attr('id', 'linear-gradient');
+
+            linearGradient.selectAll('stop')
+                .data(colorScale.ticks().map((t, i, n) => ({ offset: `${100 * i / n.length}%`, color: colorScale(t) })))
+                .enter().append('stop')
+                .attr('offset', d => d.offset)
+                .attr('stop-color', d => d.color);
+
+            legendSvg.append('rect')
+                .attr('width', legendWidth)
+                .attr('height', legendHeight)
+                .style('fill', 'url(#linear-gradient)');
+
+            legendSvg.append('g')
+                .attr('transform', `translate(0, ${legendHeight})`)
+                .call(legendAxis)
+                .append('text')
+                .attr('x', legendWidth / 2)
+                .attr('y', 30)
+                .attr('fill', 'black')
+                .style('text-anchor', 'middle')
+                .text('LAI Color Scale');
+        });
+    </script>
+</body>
+</html>
